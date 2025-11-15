@@ -1,3 +1,7 @@
 webenv/
-__pycashe__/
-.env
+__pycache__/
+*.pyc
+config/__pycache__
+routers/__pycache__
+models/__pycache__
+.git_backup/

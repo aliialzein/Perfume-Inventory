@@ -1,16 +1,15 @@
-from pymongo import MongoClient # type: ignore
-from dotenv import load_dotenv # type: ignore
-import os
+# config/database.py
+from pymongo import MongoClient  # type: ignore
+from gridfs import GridFS        # type: ignore
 
-load_dotenv()
+MONGO_URL = "mongodb://localhost:27017"
+DB_NAME = "inventory_db"
 
-user = os.getenv("MONGO_USER")
-pwd = os.getenv("MONGO_PASSWORD")
-cluster = os.getenv("MONGO_CLUSTER")
-appname = os.getenv("MONGO_APPNAME")
+client = MongoClient(MONGO_URL)
+db = client[DB_NAME]
 
-uri = f"mongodb+srv://{user}:{pwd}@{cluster}/?appName={appname}"
-client = MongoClient(uri)
-db = client.InventoryDB
+# Collection for perfumes
+perfumes_collection = db["perfumes"]
 
-collection_name = db["Perfume_collection"]
+# GridFS bucket for storing images
+fs = GridFS(db, collection="perfume_images")

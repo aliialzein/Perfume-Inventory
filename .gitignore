@@ -1,7 +1,4 @@
 webenv/
-__pycache__/
+**/__pycache__/
 *.pyc
-config/__pycache__
-routers/__pycache__
-models/__pycache__
 .git_backup/

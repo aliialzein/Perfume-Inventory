@@ -12,6 +12,10 @@ class PerfumeBase(BaseModel):
     brand: Optional[str] = None
     model_name: Optional[str] = None
 
+    # 🔹 NEW FIELDS
+    capacity_ml: Optional[int] = None       # e.g. 50, 100
+    perfume_type: Optional[str] = None      # e.g. "after bath", "eau de parfum"
+
 
 class PerfumeCreate(PerfumeBase):
     image_gridfs_id: Optional[str] = None
@@ -25,6 +29,10 @@ class PerfumeUpdate(BaseModel):
     image_gridfs_id: Optional[str] = None
     brand: Optional[str] = None
     model_name: Optional[str] = None
+
+    # 🔹 NEW FIELDS
+    capacity_ml: Optional[int] = None
+    perfume_type: Optional[str] = None
 
 
 class PerfumeInDB(PerfumeBase):

@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, UploadFile, File, Query # type: ignore
-from typing import List
+from typing import List, Optional
 from uuid import uuid4
 from datetime import datetime
 from pydantic import BaseModel # type: ignore
@@ -29,7 +29,10 @@ def perfume_helper(doc) -> PerfumeInDB:
         model_name=doc.get("model_name"),
         image_gridfs_id=doc.get("image_gridfs_id"),
         date_added=doc.get("date_added", datetime.utcnow()),
+        capacity_ml=doc.get("capacity_ml"),
+        perfume_type=doc.get("perfume_type"),
     )
+
 
 
 
@@ -168,30 +171,21 @@ class ClassificationResult(BaseModel):
 
 @router.post("/classify-image", response_model=ClassificationResult)
 def classify_image(file: UploadFile = File(...)):
-    """
-    1) Upload image
-    2) Store it in GridFS
-    3) (Future) Run classification model
-       -> product_type, brand, model_name
-    """
-    # store in GridFS
-    contents = file.file.read()
-    gridfs_id = fs.put(
-        contents,
-        filename=file.filename,
-        content_type=file.content_type,
-    )
-
+    ...
     # TODO: replace with real model inference
     product_type = "perfume"
     brand = "Dummy Brand"
     model_name = "Dummy Model"
+    capacity_ml = 100                
+    perfume_type = "after bath"       
 
     return ClassificationResult(
-        image_gridfs_id=str(gridfs_id),
+        image_gridfs_id=str(gridfs_id), # type: ignore
         product_type=product_type,
         brand=brand,
         model_name=model_name,
+        capacity_ml=capacity_ml,
+        perfume_type=perfume_type,
     )
 
 
@@ -199,6 +193,8 @@ class PricePredictionRequest(BaseModel):
     product_type: str
     brand: str
     model_name: str
+    capacity_ml: int 
+    perfume_type:str
 
 
 class PricePredictionResponse(BaseModel):
@@ -218,3 +214,75 @@ def predict_price(body: PricePredictionRequest):
     dummy_price = 100.0
 
     return PricePredictionResponse(price_predicted=dummy_price)
+
+class MetaUpdate(BaseModel):
+    product_type: str
+    brand: str
+    model_name: str
+    capacity_ml: int
+    perfume_type: str
+
+
+@router.patch("/{product_id}/meta", response_model=PerfumeInDB)
+def update_metadata(product_id: str, body: MetaUpdate):
+    """
+    Edit classification-related fields after the first AI model:
+    brand, model_name, capacity_ml, perfume_type, product_type.
+    """
+    update_data = {k: v for k, v in body.dict().items() if v is not None}
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No data to update")
+
+    doc = perfumes_collection.find_one_and_update(
+        {"product_id": product_id},
+        {"$set": update_data},
+        return_document=ReturnDocument.AFTER
+    )
+
+    if not doc:
+        raise HTTPException(status_code=404, detail="Perfume not found")
+
+    return perfume_helper(doc)
+@router.get("/filter", response_model=List[PerfumeInDB])
+def filter_perfumes(
+    brand: Optional[str] = None,
+    model_name: Optional[str] = None,
+    product_type: Optional[str] = None,
+    perfume_type: Optional[str] = None,
+    min_capacity: Optional[int] = None,
+    max_capacity: Optional[int] = None,
+    min_price: Optional[float] = None,
+    max_price: Optional[float] = None,
+):
+    query: dict = {}
+
+    if brand:
+        query["brand"] = brand
+
+    if model_name:
+        query["model_name"] = model_name
+
+    if product_type:
+        query["product_type"] = product_type
+
+    if perfume_type:
+        query["perfume_type"] = perfume_type
+
+    if min_capacity is not None or max_capacity is not None:
+        cap_cond: dict = {}
+        if min_capacity is not None:
+            cap_cond["$gte"] = min_capacity
+        if max_capacity is not None:
+            cap_cond["$lte"] = max_capacity
+        query["capacity_ml"] = cap_cond
+
+    if min_price is not None or max_price is not None:
+        price_cond: dict = {}
+        if min_price is not None:
+            price_cond["$gte"] = min_price
+        if max_price is not None:
+            price_cond["$lte"] = max_price
+        query["price_predicted"] = price_cond
+
+    docs = perfumes_collection.find(query)
+    return [perfume_helper(doc) for doc in docs]

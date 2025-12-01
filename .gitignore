@@ -16,4 +16,21 @@ ai_models/*.jpeg
 ai_models/*.png
 
 # Ignore backup of old repo if ever copied
+.git_backup/# Ignore AI model weights (TEMP disabled to commit them)
+# ai_models/*.h5
+# ai_models/*.keras
+# ai_models/*.pkl
+# ai_models/*.joblib
+# ai_models/*.onnx
+# ai_models/*.bin
+
+# Ignore big CSVs if you don’t want them in git
+# Ignore test images
+ai_models/test_images/
+ai_models/*.jpg
+ai_models/*.jpeg
+ai_models/*.png
+
+# Ignore backup of old repo if ever copied
 .git_backup/
+

@@ -1,9 +1,9 @@
 # Ignore AI model weights
-ai_models/*.h5
-ai_models/*.keras
-ai_models/*.pkl
-ai_models/*.joblib
-ai_models/*.onnx
+#ai_models/*.h5
+#ai_models/*.keras
+#ai_models/*.pkl
+#ai_models/*.joblib
+#ai_models/*.onnx
 ai_models/*.bin
 
 # Ignore big CSVs if you don’t want them in git

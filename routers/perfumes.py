@@ -1,20 +1,21 @@
-from fastapi import APIRouter, HTTPException, UploadFile, File, Query # type: ignore
+from fastapi import APIRouter, HTTPException, UploadFile, File, Query  # type: ignore
 from typing import List, Optional
 from uuid import uuid4
 from datetime import datetime
-from pydantic import BaseModel # type: ignore
-from pymongo import ReturnDocument # type: ignore
+from pydantic import BaseModel  # type: ignore
+from pymongo import ReturnDocument  # type: ignore
 
 from config.database import perfumes_collection, fs
 from models.perfume import PerfumeCreate, PerfumeUpdate, PerfumeInDB
+from ai_models.perfume_classifier import classify_perfume
+from ai_models.priceprediction import predict_price_from_features
+
 
 router = APIRouter(
     prefix="/perfumes",
     tags=["perfumes"]
 )
 
-
-# --- helper to convert Mongo doc -> PerfumeInDB ---
 
 def perfume_helper(doc) -> PerfumeInDB:
     """Convert a MongoDB document into PerfumeInDB."""
@@ -30,10 +31,8 @@ def perfume_helper(doc) -> PerfumeInDB:
         image_gridfs_id=doc.get("image_gridfs_id"),
         date_added=doc.get("date_added", datetime.utcnow()),
         capacity_ml=doc.get("capacity_ml"),
-        perfume_type=doc.get("perfume_type"),
+        gender=doc.get("gender"),
     )
-
-
 
 
 # --- CREATE ---
@@ -100,6 +99,7 @@ def delete_perfume(product_id: str):
 
     return {"message": "Perfume deleted successfully"}
 
+
 @router.post("/upload-image")
 def upload_image(file: UploadFile = File(...)):
     """
@@ -112,6 +112,7 @@ def upload_image(file: UploadFile = File(...)):
         content_type=file.content_type
     )
     return {"image_gridfs_id": str(gridfs_id)}
+
 
 @router.get("/check", response_model=PerfumeInDB | None)
 def check_existing_perfume(
@@ -128,8 +129,10 @@ def check_existing_perfume(
         return None
     return perfume_helper(doc)
 
+
 class PriceUpdate(BaseModel):
     price_modified: float
+
 
 @router.patch("/{product_id}/price", response_model=PerfumeInDB)
 def update_price(product_id: str, body: PriceUpdate):
@@ -142,8 +145,10 @@ def update_price(product_id: str, body: PriceUpdate):
         raise HTTPException(status_code=404, detail="Perfume not found")
     return perfume_helper(doc)
 
+
 class QuantityChange(BaseModel):
     delta: int
+
 
 @router.patch("/{product_id}/quantity", response_model=PerfumeInDB)
 def change_quantity(product_id: str, body: QuantityChange):
@@ -160,41 +165,55 @@ def change_quantity(product_id: str, body: QuantityChange):
         raise HTTPException(status_code=404, detail="Perfume not found")
     return perfume_helper(doc)
 
-# ---------- AI PLACEHOLDER ENDPOINTS ----------
+
+# ---------- AI ENDPOINTS ----------
 
 class ClassificationResult(BaseModel):
     image_gridfs_id: str
     product_type: str
     brand: str
     model_name: str
+    gender: str
 
 
 @router.post("/classify-image", response_model=ClassificationResult)
 def classify_image(file: UploadFile = File(...)):
-    ...
-    # TODO: replace with real model inference
-    product_type = "perfume"
-    brand = "Dummy Brand"
-    model_name = "Dummy Model"
-    capacity_ml = 100                
-    perfume_type = "after bath"       
+    # 1) Read image bytes
+    contents = file.file.read()
 
+    if not contents:
+        raise HTTPException(status_code=400, detail="Empty file")
+
+    # 2) Save image to GridFS
+    gridfs_id = fs.put(
+        contents,
+        filename=file.filename,
+        content_type=file.content_type
+    )
+
+    # 3) Run AI model
+    try:
+        result = classify_perfume(contents)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Classification error: {e}")
+
+    # 4) Return structured result
     return ClassificationResult(
-        image_gridfs_id=str(gridfs_id), # type: ignore
-        product_type=product_type,
-        brand=brand,
-        model_name=model_name,
-        capacity_ml=capacity_ml,
-        perfume_type=perfume_type,
+        image_gridfs_id=str(gridfs_id),
+        product_type=result["product_type"],
+        brand=result["brand"],
+        model_name=result["model_name"],
+        gender=result["gender"],
     )
 
 
 class PricePredictionRequest(BaseModel):
+    # comes from classify-image
     product_type: str
     brand: str
     model_name: str
-    capacity_ml: int 
-    perfume_type:str
+    gender: str
+    capacity_ml: int
 
 
 class PricePredictionResponse(BaseModel):
@@ -204,30 +223,40 @@ class PricePredictionResponse(BaseModel):
 @router.post("/predict-price", response_model=PricePredictionResponse)
 def predict_price(body: PricePredictionRequest):
     """
-    1) Take text output from classification model
-       (product_type, brand, model_name)
-    2) (Future) Run price prediction model
-       -> price_predicted
+    1) Takes classification output:
+       - product_type, brand, model_name, gender
+    2) Also takes capacity_ml (chosen by the user)
+    3) Runs the trained price prediction model
+       -> returns price_predicted
     """
-    # TODO: replace with real price model
-    # for now just return a dummy price
-    dummy_price = 100.0
+    try:
+        features = body.dict()
+        price = predict_price_from_features(features)
+    except RuntimeError as e:
+        # usually model file not loaded / missing
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error while running price prediction: {e}",
+        )
 
-    return PricePredictionResponse(price_predicted=dummy_price)
+    return PricePredictionResponse(price_predicted=price)
+
 
 class MetaUpdate(BaseModel):
     product_type: str
     brand: str
     model_name: str
     capacity_ml: int
-    perfume_type: str
+    gender: str
 
 
 @router.patch("/{product_id}/meta", response_model=PerfumeInDB)
 def update_metadata(product_id: str, body: MetaUpdate):
     """
     Edit classification-related fields after the first AI model:
-    brand, model_name, capacity_ml, perfume_type, product_type.
+    brand, model_name, gender, product_type.
     """
     update_data = {k: v for k, v in body.dict().items() if v is not None}
     if not update_data:
@@ -243,12 +272,14 @@ def update_metadata(product_id: str, body: MetaUpdate):
         raise HTTPException(status_code=404, detail="Perfume not found")
 
     return perfume_helper(doc)
+
+
 @router.get("/filter", response_model=List[PerfumeInDB])
 def filter_perfumes(
     brand: Optional[str] = None,
     model_name: Optional[str] = None,
     product_type: Optional[str] = None,
-    perfume_type: Optional[str] = None,
+    gender: Optional[str] = None,
     min_capacity: Optional[int] = None,
     max_capacity: Optional[int] = None,
     min_price: Optional[float] = None,
@@ -265,8 +296,8 @@ def filter_perfumes(
     if product_type:
         query["product_type"] = product_type
 
-    if perfume_type:
-        query["perfume_type"] = perfume_type
+    if gender:
+        query["gender"] = gender  # fixed from "perfume_type"
 
     if min_capacity is not None or max_capacity is not None:
         cap_cond: dict = {}
@@ -286,3 +317,175 @@ def filter_perfumes(
 
     docs = perfumes_collection.find(query)
     return [perfume_helper(doc) for doc in docs]
+
+
+class AutoCreateResponse(BaseModel):
+    perfume: PerfumeInDB
+    created: bool  # true if new perfume, false if already existed
+
+
+@router.post("/auto-create-from-image", response_model=AutoCreateResponse)
+def auto_create_from_image(file: UploadFile = File(...)):
+    """
+    1) Upload an image
+    2) Classify (brand, model_name, gender)
+    3) Store image in GridFS
+    4) If perfume with same brand+model_name exists -> reuse it
+       Otherwise create a new Perfume with default price/quantity.
+    """
+    contents = file.file.read()
+
+    if not contents:
+        raise HTTPException(status_code=400, detail="Empty file")
+
+    gridfs_id = fs.put(
+        contents,
+        filename=file.filename,
+        content_type=file.content_type
+    )
+
+    try:
+        result = classify_perfume(contents)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Classification error: {e}")
+
+    brand = result["brand"]
+    model_name = result["model_name"]
+    gender = result["gender"]
+    product_type = result["product_type"]
+
+    # 1) Check if perfume already exists
+    existing = perfumes_collection.find_one(
+        {"brand": brand, "model_name": model_name}
+    )
+
+    if existing:
+        # just update image / gender if you want
+        perfumes_collection.update_one(
+            {"_id": existing["_id"]},
+            {"$set": {"image_gridfs_id": str(gridfs_id), "gender": gender}},
+        )
+        updated = perfumes_collection.find_one({"_id": existing["_id"]})
+        return AutoCreateResponse(perfume=perfume_helper(updated), created=False)
+
+    # 2) Create new perfume (dummy price & quantity for now)
+    data = {
+        "product_id": str(uuid4()),
+        "product_type": product_type,
+        "price_predicted": 0.0,   # will be replaced by price model later
+        "price_modified": None,
+        "quantity": 0,
+        "brand": brand,
+        "model_name": model_name,
+        "capacity_ml": None,
+        "gender": gender,
+        "image_gridfs_id": str(gridfs_id),
+        "date_added": datetime.utcnow(),
+    }
+
+    result_insert = perfumes_collection.insert_one(data)
+    data["_id"] = result_insert.inserted_id
+
+    return AutoCreateResponse(perfume=perfume_helper(data), created=True)
+
+
+class ResolveImageResponse(BaseModel):
+    image_gridfs_id: str
+    product_type: str
+    brand: str
+    model_name: str
+    gender: str
+    capacity_ml: Optional[int] = None
+    exists: bool
+    perfume: Optional[PerfumeInDB] = None
+    price_predicted: Optional[float] = None
+
+
+@router.post("/resolve-image", response_model=ResolveImageResponse)
+def resolve_image(
+    file: UploadFile = File(...),
+    capacity_ml: Optional[int] = Query(
+        None,
+        description="Capacity in ml to use for price prediction if perfume does not exist yet",
+    ),
+):
+    """
+    1) Upload image
+    2) Classify to (product_type, brand, model_name, gender)
+    3) Check if a perfume with same brand + model_name exists in DB
+       - If EXISTS: return existing perfume (with price & quantity)
+       - If NOT: optionally run price prediction (if capacity_ml is given)
+                 and return classification + predicted price so frontend
+                 can let user edit and then call POST /perfumes.
+    """
+    contents = file.file.read()
+    if not contents:
+        raise HTTPException(status_code=400, detail="Empty file")
+
+    # Save image to GridFS
+    gridfs_id = fs.put(
+        contents,
+        filename=file.filename,
+        content_type=file.content_type,
+    )
+
+    # Run classifier
+    try:
+        result = classify_perfume(contents)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Classification error: {e}")
+
+    product_type = result["product_type"]
+    brand = result["brand"]
+    model_name = result["model_name"]
+    gender = result["gender"]
+
+    # 1) Check if perfume already exists (brand + model_name)
+    existing = perfumes_collection.find_one(
+        {"brand": brand, "model_name": model_name}
+    )
+
+    if existing:
+        current_price = existing.get("price_modified") or existing.get("price_predicted", 0.0)
+
+        return ResolveImageResponse(
+            image_gridfs_id=str(gridfs_id),
+            product_type=product_type,
+            brand=brand,
+            model_name=model_name,
+            gender=gender,
+            capacity_ml=existing.get("capacity_ml"),
+            exists=True,
+            perfume=perfume_helper(existing),
+            price_predicted=float(current_price),
+        )
+
+    # 2) Not existing: optionally run price model if capacity_ml provided
+    predicted_price: Optional[float] = None
+    if capacity_ml is not None:
+        features = {
+            "product_type": product_type,
+            "brand": brand,
+            "model_name": model_name,
+            "gender": gender,
+            "capacity_ml": capacity_ml,
+        }
+        try:
+            predicted_price = predict_price_from_features(features)
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Price prediction error: {e}",
+            )
+
+    return ResolveImageResponse(
+        image_gridfs_id=str(gridfs_id),
+        product_type=product_type,
+        brand=brand,
+        model_name=model_name,
+        gender=gender,
+        capacity_ml=capacity_ml,
+        exists=False,
+        perfume=None,
+        price_predicted=predicted_price,
+    )
